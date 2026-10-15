@@ -82,7 +82,7 @@ tools = [
 
 messages = [
     {"role": "system", "content": "你是一个智能问答助手，精简概括性的回答我的问题！"},
-    {"role": "user", "content": "今天有什么 AI 新闻？同时要标注来源示例[标题](链接) 或者「据 XX 报道」"}
+    {"role": "user", "content": "今天有什么 AI 新闻？同时要标注来源！示例[标题](链接) 或者「据 XX 报道」"}
 ]
 
 for _ in range(config.MAX_ITER):
@@ -104,19 +104,40 @@ for _ in range(config.MAX_ITER):
     # 循环遍历模型的所用工具调用
     for tool_call in msg.tool_calls:
         name = tool_call.function.name
-        args = json.loads(tool_call.function.arguments)
         func = tool_map.get(name)
-        if func is None:
-            result = f"没有名为 {name} 的工具。可用工具：{list(tool_map)}"
+        # 第四条，json解析兜底
+        try:
+            args = json.loads(tool_call.function.arguments)
+        except (json.JSONDecodeError, TypeError) as e:
+            result = f"你提供的参数不是合法 JSON，解析失败：{e}。请重新生成合法的参数。"
         else:
-            result = func(**args)
-        messages.append({
-            "role": "tool",
-            "tool_call_id": tool_call.id,
-            "content": json.dumps(result, ensure_ascii=False)
-        })
+            # 第三条，工具执行兜底
+            if func is None:
+                result = f"没有名为 {name} 的工具。可用工具：{list(tool_map)}"
+            else:
+                try:
+                    result = func(**args)
+                except Exception as e:
+                    result = f"工具 {name} 执行失败：{type(e).__name__}: {e}"
+            
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": json.dumps(result, ensure_ascii=False) if not isinstance(result, str) else result
+            })
     
     print("本轮 tool_calls 数量：", len(msg.tool_calls) if msg.tool_calls else 0)
 
 else:
-    print("达到最大迭代次数，强制结束！")
+    # 第五条，迭代耗尽收口
+    print("达到最大迭代次数，正在收口……")
+    messages.append({
+        "role": "user",
+        "content": "已达最大工具调用轮数，请不要再请求调用工具，基于现有信息直接作答。"
+    })
+    final = client.chat.completions.create(
+        model=os.getenv("MODEL_ID"),
+        messages=messages,
+        temperature=0.7
+    )
+    print(final.choices[0].message.content)
